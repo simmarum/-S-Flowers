@@ -1,0 +1,2 @@
+Libraries in this folder are probably unnecessary,
+because they can be downloaded by the library manager in the Arduino IDE
