@@ -1,40 +1,95 @@
+#include <OneWire.h>
+#include <DS18B20.h>
 #include <TimerOne.h>
 
-#define ledPin 2
 #define second 1000000
-void CounterTime(void);
-void blinkLed(void);
-long timeToBlink = 5;
-long countToBlink = 0;
-bool whetherBlinkLed = false;
 
+void CounterTime(void);
+
+/// General counter time to refresh data from sensors
+long iterator = 0;
+const long samples = 18;
+long timeToGetAllData = 36; /// time to get all date (18 times)
+long countToGetAllData = 0;
+long timeToGetData = long(timeToGetAllData/int(samples)); /// time between every sample
+long countToGetData = 0;
+bool whetherGetData = false;
+
+
+/// Soil humidity
+float SoilDataFirst[samples];
+float SoilDataSecond[samples];
+float getSoilHumidity(int input);
+float getMeanHumidity(int input);
+
+/// DEBUG
+void printTableFloat(float input[]){
+  for(int i=0;i<samples;i++){
+    Serial.print(String(input[i]) + ", ");
+  }
+  Serial.println();
+}
 void setup()
 {
+  
   Serial.begin(115200);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin,LOW);
-  //Ustawienie przerwania co 1s
-  Timer1.initialize(second);
-  //Przyczepienie funkcji mruganie do timera1
+  Timer1.initialize(second); //Set interrupt every 1 second
   Timer1.attachInterrupt(CounterTime);
 }
  
 void loop(){
-  if(whetherBlinkLed){
-    blinkLed();
-    whetherBlinkLed = !whetherBlinkLed;
+  if(whetherGetData){
+    if(iterator == samples){
+      Serial.println("TODO - wyslac dane przez wifi");
+      float meanFirst = getMeanHumidity(A0);
+      float meanSecond = getMeanHumidity(A1);
+      iterator = 0;
+      countToGetData = 0;
+      whetherGetData = false;
+    } else {
+      Serial.println(iterator);
+      SoilDataFirst[iterator] = getSoilHumidity(A0);
+      SoilDataSecond[iterator] = getSoilHumidity(A1);
+      iterator++;
+      whetherGetData = false;
+    }
   }
 }
 
 void CounterTime(){
-  countToBlink++;
-  if( countToBlink == timeToBlink){
-    whetherBlinkLed = !whetherBlinkLed;
-    countToBlink = 0;
+  countToGetData++;
+  if( countToGetData == timeToGetData){
+    whetherGetData = true;
+    countToGetData = 0;
   }
 }
 
-void blinkLed(){
-  Serial.println(!digitalRead(ledPin));
-  digitalWrite(ledPin, !digitalRead(ledPin));
+float getSoilHumidity(int input){
+  long wartosc_A = analogRead(input);
+  float value = float(wartosc_A);
+  value *= 100;
+  value /=1023;
+  return value; // return in percent
+}
+
+float getMeanHumidity(int input){
+  /// find max and min value in array
+  float minV = 1024.0; // max value from analog read is 1023 so 1024 is enough
+  float maxV = 0; // no comment ;p
+  float sum = 0.0; // sum of all data
+  for(int i=0;i<samples;i++){
+    float value = 0.0;
+    if (input == A0){
+      value = SoilDataFirst[i];
+    } else if (input == A1){
+      value = SoilDataSecond[i];
+    }
+    minV = min(minV,value);
+    maxV = max(maxV,value);
+    sum = sum + value;
+  }
+  /// addition all values and substraction min and max value then divide by samples-2
+  sum = sum - (minV + maxV);
+  sum = sum / (samples-2);
+  return sum;
 }
