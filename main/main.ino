@@ -1,7 +1,9 @@
+#include <dht11.h>
 #include <DallasTemperature.h>
 #include <OneWire.h>
 #include <DS18B20.h>
 #include <TimerOne.h>
+#include "DHT.h"
 
 #define second 1000000
 
@@ -18,6 +20,8 @@ bool whetherGetData = false;
 
 
 /// Soil humidity
+#define SHFirst A0
+#define SHSecond A1
 float SoilDataFirst[samples];
 float SoilDataSecond[samples];
 float getSoilHumidity(int input);
@@ -31,6 +35,22 @@ float TempBlackData[samples];
 float getTempBlack(void);
 float getMeanTempBlack(void);
 
+/// Liquid level sensor
+#define LLPin A2
+float LiquidLevelData[samples];
+float getLiquidLevel(int input);
+float getMeanLiquidLevel(void);
+
+/// DHT11 (Temperature and humidity (blue))
+#define DHTPIN 4     // what digital pin we're connected to
+#define DHTTYPE DHT11   // DHT 11
+DHT dht(DHTPIN, DHTTYPE);
+float TempBlueData[samples];
+float HumBlueData[samples];
+float getTempBlue();
+float getHumBlue();
+float getMeanTempBlue(void);
+float getMeanHumBlue(void);
 /// DEBUG
 void printTableFloat(float input[]){
   for(int i=0;i<samples;i++){
@@ -46,30 +66,43 @@ void setup()
   Timer1.attachInterrupt(CounterTime);
   
   tempSensors.begin(); //Start the DallasTemperature Library
+  dht.begin();
 }
  
 void loop(){
   if(whetherGetData){
     if(iterator == samples){
       Serial.println("TODO - wyslac dane przez wifi");
-      float meanFirst = getMeanHumidity(A0);
+      float meanFirst = getMeanHumidity(SHFirst);
+      Serial.print("\tSH1:");
       Serial.print(meanFirst,2);
-      Serial.print("\t");
-      float meanSecond = getMeanHumidity(A1);
+      float meanSecond = getMeanHumidity(SHSecond);
+      Serial.print("\tSH2:");
       Serial.print(meanSecond,2);
-      Serial.print("\t");
       float meanTempBlack = getMeanTempBlack();
+      Serial.print("\tTBk:");
       Serial.print(meanTempBlack,2);
-      Serial.print("\t");
+      float meanLiquidLevel = getMeanLiquidLevel();
+      Serial.print("\tLL:");
+      Serial.print(meanLiquidLevel,2);
+      float meanTempBlue= getMeanTempBlue();
+      Serial.print("\tTBe:");
+      Serial.print(meanTempBlue,2);
+      float meanHumBlue = getMeanHumBlue();
+      Serial.print("\tHBe:");
+      Serial.print(meanHumBlue,2);
       Serial.println();
       iterator = 0;
       countToGetData = 0;
       whetherGetData = false;
     } else {
       Serial.println(iterator);
-      SoilDataFirst[iterator] = getSoilHumidity(A0);
-      SoilDataSecond[iterator] = getSoilHumidity(A1);
+      SoilDataFirst[iterator] = getSoilHumidity(SHFirst);
+      SoilDataSecond[iterator] = getSoilHumidity(SHSecond);
       TempBlackData[iterator] = getTempBlack();
+      LiquidLevelData[iterator] = getLiquidLevel(LLPin);
+      TempBlueData[iterator] = getTempBlue();
+      HumBlueData[iterator] = getHumBlue();
       iterator++;
       whetherGetData = false;
     }
@@ -99,9 +132,9 @@ float getMeanHumidity(int input){
   float sum = 0.0; // sum of all data
   for(int i=0;i<samples;i++){
     float value = 0.0;
-    if (input == A0){
+    if (input == SHFirst){
       value = SoilDataFirst[i];
-    } else if (input == A1){
+    } else if (input == SHSecond){
       value = SoilDataSecond[i];
     }
     minV = min(minV,value);
@@ -127,6 +160,88 @@ float getMeanTempBlack(){
   float sum = 0.0; // sum of all data
   for(int i=0;i<samples;i++){
     float value = TempBlackData[i];
+    minV = min(minV,value);
+    maxV = max(maxV,value);
+    sum = sum + value;
+  }
+  /// addition all values and substraction min and max value then divide by samples-2
+  sum = sum - (minV + maxV);
+  sum = sum / (samples-2);
+  return sum;
+}
+
+float getLiquidLevel(int input){
+  float len = 0.0;
+  long readA = analogRead(input);
+  float value = float(readA);
+  value -=400; // approx 400 is minimum
+  value = max(value,0); // if read smaller than 400
+  value = value/240; // approx 640 is maximum so 640-200 for scale to <0-1>
+  value = min(value,1.0); // if something bigger then 1
+  return value; // return in percent
+}
+float getMeanLiquidLevel(){
+  /// find max and min value in array
+  float minV = 1.0; // max temperature
+  float maxV = 0.0; // min temperature
+  float sum = 0.0; // sum of all data
+  for(int i=0;i<samples;i++){
+    float value = LiquidLevelData[i];
+    minV = min(minV,value);
+    maxV = max(maxV,value);
+    sum = sum + value;
+  }
+  /// addition all values and substraction min and max value then divide by samples-2
+  sum = sum - (minV + maxV);
+  sum = sum / (samples-2);
+  return sum;
+}
+
+float getTempBlue(){
+  float t = dht.readTemperature(); // in Celsius
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(t) ) {
+    Serial.println("Failed to read from DHT sensor!");
+    return 0.0;
+  }
+  return t;
+}
+
+float getMeanTempBlue(){
+   /// find max and min value in array
+  float minV = 1024.0; // max temperature
+  float maxV = -1024.0; // min temperature
+  float sum = 0.0; // sum of all data
+  for(int i=0;i<samples;i++){
+    float value = TempBlueData[i];
+    minV = min(minV,value);
+    maxV = max(maxV,value);
+    sum = sum + value;
+  }
+  /// addition all values and substraction min and max value then divide by samples-2
+  sum = sum - (minV + maxV);
+  sum = sum / (samples-2);
+  return sum;
+}
+
+
+float getHumBlue(){
+  float h = dht.readHumidity();
+  // Check if any reads failed and exit early (to try again).
+  if (isnan(h) ) {
+    Serial.println("Failed to read from DHT sensor!");
+    return 0.0;
+  }
+  return h;
+}
+
+float getMeanHumBlue(){
+     /// find max and min value in array
+  float minV = 1024.0; // max temperature
+  float maxV = -1024.0; // min temperature
+  float sum = 0.0; // sum of all data
+  for(int i=0;i<samples;i++){
+    float value = HumBlueData[i];
     minV = min(minV,value);
     maxV = max(maxV,value);
     sum = sum + value;
