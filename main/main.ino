@@ -1,160 +1,232 @@
-#include <dht11.h>
 #include <DallasTemperature.h>
 #include <OneWire.h>
-#include <DS18B20.h>
 #include <TimerOne.h>
 #include "DHT.h"
 #include "WiFiEsp.h"
 
 #ifndef HAVE_HWSERIAL1
 #include "SoftwareSerial.h"
-SoftwareSerial Serial1(10, 11); // RX, TX
+SoftwareSerial esp(10, 11); // RX, TX
 #endif
 
-char ssid[] = "IronMaiden";         // your network SSID (name)
-char pass[] = "72e3d0d9bfa2";        // your network password
-int status = WL_IDLE_STATUS;     // the Wifi radio's status
+String data; // data to send to server
+char server[] = "192.168.1.4"; // www.example.com
+String uri = "/api/measurement_data";// our example is /esppost.php
 
 #define second 1000000
-
-void CounterTime(void);
-
+void CounterTime(void); // every one second is call by timer
+void LedLight(int x);
 /// General counter time to refresh data from sensors
-long iterator = 0;
-const long samples = 18;
-long timeToGetAllData = 36; /// time to get all date (18 times)
-long countToGetAllData = 0;
-long timeToGetData = long(timeToGetAllData / int(samples)); /// time between every sample
-long countToGetData = 0;
-bool whetherGetData = false;
+long iterator = 0; // actual number of sample
+const int samples = 8; // how many samples is collect
+int timeToGetAllData = samples * 2; // time in seconds to get all data (please make it multiple of samples
+int timeToGetData = int(timeToGetAllData / samples); /// time between every sample
+long countToGetData = 0; // simple counter to know when get data from sensor
+bool whetherGetData = false; // condition in main to know when get data from sensor
 
+/// Mean
+float getMean(long sum);
 
 /// Soil humidity
 #define SHFirst A0
 #define SHSecond A1
-float SoilDataFirst[samples];
-float SoilDataSecond[samples];
-float getSoilHumidity(int input);
-float getMeanHumidity(int input);
+long SumSoilDataFirst;
+long SumSoilDataSecond;
+long getSoilHumidity(int input);
 
 /// DS18B20 - temperature (small black)
 #define ONE_WIRE_BUS 2
 OneWire oneWire(ONE_WIRE_BUS); // this sensor use ONEWIRE connections
 DallasTemperature tempSensors(&oneWire); // to make it easier
-float TempBlackData[samples];
-float getTempBlack(void);
-float getMeanTempBlack(void);
+long SumTempBlackData;
+long getTempBlack(void);
 
 /// Liquid level sensor
 #define LLPin A2
-float LiquidLevelData[samples];
-float getLiquidLevel(int input);
-float getMeanLiquidLevel(void);
+long SumLiquidLevelData;
+long getLiquidLevel(int input);
 
 /// DHT11 (Temperature and humidity (blue))
 #define DHTPIN 4     // what digital pin we're connected to
 #define DHTTYPE DHT11   // DHT 11
 DHT dht(DHTPIN, DHTTYPE);
-float TempBlueData[samples];
-float HumBlueData[samples];
-float getTempBlue();
-float getHumBlue();
-float getMeanTempBlue(void);
-float getMeanHumBlue(void);
+float SumTempBlueData;
+float SumHumBlueData;
+int getTempBlue();
+int getHumBlue();
 
 /// LED
-#define ledPin 7
+#define ledPin0 7
+#define ledPin1 8
 
-/// DEBUG
-void printTableFloat(float input[]) {
-  for (int i = 0; i < samples; i++) {
-    Serial.print(String(input[i]) + ", ");
-  }
-  Serial.println();
-}
+
+char ssid[] = "1qaz"; //your ssid of wifi
+char pass[] = "1qazxsw2"; // your password to wifi
+int status = WL_IDLE_STATUS;
+WiFiEspClient client;
+
 void setup()
 {
-  digitalWrite(ledPin, HIGH);
-  Serial.begin(115200);
+  LedLight(1);
+  Serial.begin(115200); // begin serial in arduino IDE another than esp
   Timer1.initialize(second); //Set interrupt every 1 second
-  Timer1.attachInterrupt(CounterTime);
-  Serial1.begin(9600);    // initialize serial for ESP module
-  WiFi.init(&Serial1);    // initialize ESP module
+  Timer1.attachInterrupt(CounterTime); // attach out function
+  tempSensors.begin(); //Start the DallasTemperature Library
+  dht.begin(); // start the dht library
+
+  esp.begin(9600); // begin communication with esp
+
+  
+  WiFi.init(&esp);
   // check for the presence of the shield
   if (WiFi.status() == WL_NO_SHIELD) {
     Serial.println("WiFi shield not present");
     // don't continue
-    while (true) {
-      digitalWrite(ledPin, LOW);
-      delay(500);
-      digitalWrite(ledPin, HIGH);
-      delay(500);
-    }
+    while (true);
   }
   // attempt to connect to WiFi network
   while ( status != WL_CONNECTED) {
-    digitalWrite(ledPin, LOW);
     Serial.print("Attempting to connect to WPA SSID: ");
     Serial.println(ssid);
     // Connect to WPA/WPA2 network
     status = WiFi.begin(ssid, pass);
   }
-  digitalWrite(ledPin, HIGH);
   // you're connected now, so print out the data
   Serial.println("You're connected to the network");
-  if (WiFi.ping("www.google.com")) {
-    Serial.println("PING to google.com was succesfull");
-  } else {
-    Serial.println("PING to google.com was fail!!!");
-    while (true) {
-      digitalWrite(ledPin, LOW);
-      delay(100);
-      digitalWrite(ledPin, HIGH);
-      delay(100);
-    }
+
+  LedLight(3);
+  Serial.println("END SETUP");
+}
+
+//reset the esp8266 module
+void reset() {
+  esp.println("AT+RST");
+  delay(2000);
+  if (esp.find("OK") ) Serial.println("Module Reset");
+}
+
+// connect esp with wifi
+/*void connectWifi() {
+  String cmd = "AT+CWJAP=\"" + ssid + "\",\"" + password + "\"";
+  esp.println(cmd);
+  delay(500);
+  if (esp.find("OK")) {
+    Serial.println("Connected!");
+  }
+  esp.println("AT+CIPMUX=0");
+  //else {
+  //  Serial.println("Cannot connect to wifi");
+  //  connectWifi();
+  //}
+  }*/
+
+// function to send httppost on serwer
+void httppost (String data) {
+
+  Serial.println("Starting connection to server...");
+  // if you get a connection, report back via serial
+  if (client.connect(server, 4000)) {
+    Serial.println("Connected to server");
+    // Make a HTTP request
+    Serial.println(data);
+    client.println("GET /api/measurement_data?"+data+ " HTTP/1.1");
+    client.println("Host: 192.168.1.4:4000");
+    client.println("Authorization: Basic h5oDjJ0BKAyTbDw+rGIYInEjN4GUKpxZxJ1");
+    client.println("Connection: close");
+    client.println();
   }
 
-  tempSensors.begin(); //Start the DallasTemperature Library
-  dht.begin();
+  /*
+    esp.println("AT+CIPSTART=\"TCP\",\"" + server + "\",4000");//start a TCP connection.
+    if (esp.find("OK")) {
+    Serial.println("TCP connection ready");
+    } delay(100);
+    data = "{\"verified\": true}";
+    String postRequest =
+    "POST " + uri + " HTTP/1.1\r\n" +
+    "authorization: Basic h5oDjJ0BKAyTbDw+rGIYInEjN4GUKpxZxJ1 \r\n" +
+    "accept: *" + "/" + "*\r\n" +
+    "content-length: " + data.length() + "\r\n" +
+    "content-type: application/json\r\n" +
+    data;
+    String sendCmd = "AT+CIPSEND=";//determine the number of caracters to be sent.
+    esp.print(sendCmd);
+    esp.println(postRequest.length() );
+    Serial.println(postRequest);
+    delay(100);
+    if (esp.find(">")) {
+    Serial.println("Sending..");
+    esp.print(postRequest);
+    if ( esp.find("SEND OK")) {
+      Serial.println("Packet sent");
+      while (esp.available()) {
+        String tmpResp = esp.readString();
+        Serial.println(tmpResp);
+      }
+      // close the connection
+      esp.println("AT+CIPCLOSE");
+    }
+    }*/
 }
 
 void loop() {
+
   if (whetherGetData) {
+    LedLight(2);
     if (iterator == samples) {
-      Serial.println("\nTODO - wyslac dane przez wifi");
-      float meanFirst = getMeanHumidity(SHFirst);
-      Serial.print("\tSH1:");
-      Serial.print(meanFirst, 2);
-      float meanSecond = getMeanHumidity(SHSecond);
-      Serial.print("\tSH2:");
-      Serial.print(meanSecond, 2);
-      float meanTempBlack = getMeanTempBlack();
-      Serial.print("\tTBk:");
-      Serial.print(meanTempBlack, 2);
-      float meanLiquidLevel = getMeanLiquidLevel();
-      Serial.print("\tLL:");
-      Serial.print(meanLiquidLevel, 2);
-      float meanTempBlue = getMeanTempBlue();
-      Serial.print("\tTBe:");
-      Serial.print(meanTempBlue, 2);
-      float meanHumBlue = getMeanHumBlue();
-      Serial.print("\tHBe:");
-      Serial.print(meanHumBlue, 2);
-      Serial.println();
+      //Serial.println("\nWysyłanie danych przez wifi");
+      int meanSoilFirst = 100 - round((getMean(SumSoilDataFirst) / 1024) * 100);
+      SumSoilDataFirst = 0;
+      //Serial.print("\tSH1:");
+      //Serial.print(meanSoilFirst);
+      int meanSoilSecond = round((getMean(SumSoilDataSecond) / 1024) * 100);
+      SumSoilDataSecond = 0;
+      //Serial.print("\tSH2:");
+      //Serial.print(meanSoilSecond);
+      float meanTempBlack = round(getMean(SumTempBlackData) / 10) / 10;
+      SumTempBlackData = 0;
+      //Serial.print("\tTBk:");
+      //Serial.print(meanTempBlack);
+      int meanLiquidLevel = round(getMean(SumLiquidLevelData));
+      SumLiquidLevelData = 0;
+      //Serial.print("\tLL:");
+      //Serial.print(meanLiquidLevel);
+      float meanTempBlue = round(getMean(SumTempBlueData) / 10) / 10;
+      SumTempBlueData = 0;
+      // Serial.print("\tTBe:");
+      //Serial.print(meanTempBlue);
+      int meanHumBlue = round(getMean(SumHumBlueData) / 100);
+      SumHumBlueData = 0;
+      //Serial.print("\tHBe:");
+      //Serial.print(meanHumBlue);
+      //Serial.println();
+      // fill data to send
+      data = "soil_humidity=" + String(meanSoilFirst) + "&" // INT -> percentage
+      //    + "\"soil2\":" + String(meanSoilSecond)  + ","// INT -> percentage
+         + "air_temperature=" + String(meanTempBlack) + "&" // FLOAT (XX.XX) -> Celsius degrees
+        // + "air_humidity=" + String(meanTempBlue)  + "&"// FLOAT (XX.XX) -> Celsius degrees
+         + "liquid_level_millimeters=" + String(meanLiquidLevel) + "&" // INT -> percentage (exact mm is impossible because documentation of this sensor is very different from this what sensor is response ;/)
+      // on server make something like "low level", "medium level", "high level" of water?
+         + "air_humidity=" + String(meanHumBlue); //INT -> percentage
+      httppost(data); // send data
+      // reset all variable after send data
       iterator = 0;
       countToGetData = 0;
       whetherGetData = false;
     } else {
-      Serial.print(iterator+" ");
-      SoilDataFirst[iterator] = getSoilHumidity(SHFirst);
-      SoilDataSecond[iterator] = getSoilHumidity(SHSecond);
-      TempBlackData[iterator] = getTempBlack();
-      LiquidLevelData[iterator] = getLiquidLevel(LLPin);
-      TempBlueData[iterator] = getTempBlue();
-      HumBlueData[iterator] = getHumBlue();
+      // get one sample of data from sensor
+      Serial.print("Pobieram próbkę numer: ");
+      Serial.println(iterator + 1);
+      SumSoilDataFirst += getSoilHumidity(SHFirst);
+      SumSoilDataSecond += getSoilHumidity(SHSecond);
+      SumTempBlackData += getTempBlack();
+      SumLiquidLevelData += getLiquidLevel(LLPin);
+      SumTempBlueData += getTempBlue();
+      SumHumBlueData += getHumBlue();
       iterator++;
       whetherGetData = false;
     }
+    LedLight(3);
   }
 }
 
@@ -166,138 +238,65 @@ void CounterTime() {
   }
 }
 
-float getSoilHumidity(int input) {
-  long wartosc_A = analogRead(input);
-  float value = float(wartosc_A);
-  value *= 100;
-  value /= 1023;
-  return value; // return in percent
+// DEBUG - function to light LED in binary mode (2 bit)
+void LedLight(int x) {
+  if (x > 3 or x < 0) x = 0;
+  int a0 = x % 2;
+  int a1 = x / 2;
+  digitalWrite(ledPin1, a0);
+  digitalWrite(ledPin0, a1);
 }
 
-float getMeanHumidity(int input) {
-  /// find max and min value in array
-  float minV = 1024.0; // max value from analog read is 1023 so 1024 is enough
-  float maxV = 0; // no comment ;p
-  float sum = 0.0; // sum of all data
-  for (int i = 0; i < samples; i++) {
-    float value = 0.0;
-    if (input == SHFirst) {
-      value = SoilDataFirst[i];
-    } else if (input == SHSecond) {
-      value = SoilDataSecond[i];
-    }
-    minV = min(minV, value);
-    maxV = max(maxV, value);
-    sum = sum + value;
-  }
-  /// addition all values and substraction min and max value then divide by samples-2
-  sum = sum - (minV + maxV);
-  sum = sum / (samples - 2);
-  return sum;
+// return mean of samples in float
+float getMean(long sum) {
+  float sum_f = (float)sum;
+  return sum_f / samples;
 }
 
-float getTempBlack() {
+
+long getSoilHumidity(int input) {
+  long soil = analogRead(input);
+  return soil;
+}
+
+
+long getTempBlack() {
   tempSensors.requestTemperatures(); // Tell the DS18B20 to get make a measurement
   float value = tempSensors.getTempCByIndex(0); // Get that temperature
-  return value;
+  long valueRet = value * 100;
+  return valueRet;
 }
 
-float getMeanTempBlack() {
-  /// find max and min value in array
-  float minV = 1024.0; // max temperature
-  float maxV = -1024.0; // min temperature
-  float sum = 0.0; // sum of all data
-  for (int i = 0; i < samples; i++) {
-    float value = TempBlackData[i];
-    minV = min(minV, value);
-    maxV = max(maxV, value);
-    sum = sum + value;
-  }
-  /// addition all values and substraction min and max value then divide by samples-2
-  sum = sum - (minV + maxV);
-  sum = sum / (samples - 2);
-  return sum;
-}
-
-float getLiquidLevel(int input) {
-  float len = 0.0;
+long getLiquidLevel(int input) {
   long readA = analogRead(input);
   float value = float(readA);
   value -= 400; // approx 400 is minimum
   value = max(value, 0); // if read smaller than 400
   value = value / 240; // approx 640 is maximum so 640-200 for scale to <0-1>
   value = min(value, 1.0); // if something bigger then 1
+  readA = value * 100; // from <0-1> to <0-100> and int not float
   return value; // return in percent
 }
-float getMeanLiquidLevel() {
-  /// find max and min value in array
-  float minV = 1.0; // max temperature
-  float maxV = 0.0; // min temperature
-  float sum = 0.0; // sum of all data
-  for (int i = 0; i < samples; i++) {
-    float value = LiquidLevelData[i];
-    minV = min(minV, value);
-    maxV = max(maxV, value);
-    sum = sum + value;
-  }
-  /// addition all values and substraction min and max value then divide by samples-2
-  sum = sum - (minV + maxV);
-  sum = sum / (samples - 2);
-  return sum;
-}
 
-float getTempBlue() {
+int getTempBlue() {
   float t = dht.readTemperature(); // in Celsius
   // Check if any reads failed and exit early (to try again).
   if (isnan(t) ) {
     Serial.println("Failed to read from DHT sensor!");
     return 0.0;
   }
-  return t;
+  int tem = t * 100;
+  return tem;
 }
 
-float getMeanTempBlue() {
-  /// find max and min value in array
-  float minV = 1024.0; // max temperature
-  float maxV = -1024.0; // min temperature
-  float sum = 0.0; // sum of all data
-  for (int i = 0; i < samples; i++) {
-    float value = TempBlueData[i];
-    minV = min(minV, value);
-    maxV = max(maxV, value);
-    sum = sum + value;
-  }
-  /// addition all values and substraction min and max value then divide by samples-2
-  sum = sum - (minV + maxV);
-  sum = sum / (samples - 2);
-  return sum;
-}
-
-
-float getHumBlue() {
+int getHumBlue() {
   float h = dht.readHumidity();
   // Check if any reads failed and exit early (to try again).
   if (isnan(h) ) {
     Serial.println("Failed to read from DHT sensor!");
     return 0.0;
   }
-  return h;
-}
-
-float getMeanHumBlue() {
-  /// find max and min value in array
-  float minV = 1024.0; // max temperature
-  float maxV = -1024.0; // min temperature
-  float sum = 0.0; // sum of all data
-  for (int i = 0; i < samples; i++) {
-    float value = HumBlueData[i];
-    minV = min(minV, value);
-    maxV = max(maxV, value);
-    sum = sum + value;
-  }
-  /// addition all values and substraction min and max value then divide by samples-2
-  sum = sum - (minV + maxV);
-  sum = sum / (samples - 2);
-  return sum;
+  int hum = h * 100;
+  return hum;
 }
 
